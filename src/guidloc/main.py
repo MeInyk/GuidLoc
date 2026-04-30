@@ -7,6 +7,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from guidloc.auth.router import router as auth_router
+from guidloc.chats.router import router as chats_router
 from guidloc.common.config import Settings, get_settings
 from guidloc.common.database import get_session
 from guidloc.common.logging import setup_logging
@@ -40,6 +41,7 @@ def create_app() -> FastAPI:
 
     app.include_router(auth_router)
     app.include_router(users_router)
+    app.include_router(chats_router)
     logger.info("Application initialized (env=%s)", settings.app_env)
     return app
 
