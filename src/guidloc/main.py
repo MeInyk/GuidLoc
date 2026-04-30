@@ -10,6 +10,7 @@ from guidloc.auth.router import router as auth_router
 from guidloc.common.config import Settings, get_settings
 from guidloc.common.database import get_session
 from guidloc.common.logging import setup_logging
+from guidloc.users.router import router as users_router
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +39,7 @@ def create_app() -> FastAPI:
         return {"status": "ok", "env": settings.app_env, "database": db_status}
 
     app.include_router(auth_router)
-
+    app.include_router(users_router)
     logger.info("Application initialized (env=%s)", settings.app_env)
     return app
 

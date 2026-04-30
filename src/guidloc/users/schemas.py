@@ -26,3 +26,10 @@ class UserRead(BaseModel):
     is_superuser: bool
     created_at: datetime
     updated_at: datetime
+
+
+class UserUpdate(BaseModel):
+    """Payload for partial profile updates."""
+
+    first_name: str | None = Field(default=None, max_length=100)
+    last_name: str | None = Field(default=None, max_length=100)
