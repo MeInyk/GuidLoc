@@ -6,6 +6,7 @@ from fastapi import Depends, FastAPI
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from guidloc.auth.router import router as auth_router
 from guidloc.common.config import Settings, get_settings
 from guidloc.common.database import get_session
 from guidloc.common.logging import setup_logging
@@ -35,6 +36,8 @@ def create_app() -> FastAPI:
             db_status = "error"
 
         return {"status": "ok", "env": settings.app_env, "database": db_status}
+
+    app.include_router(auth_router)
 
     logger.info("Application initialized (env=%s)", settings.app_env)
     return app

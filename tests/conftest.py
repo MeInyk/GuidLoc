@@ -12,6 +12,7 @@ from collections.abc import AsyncIterator
 
 import pytest
 import pytest_asyncio
+from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -20,7 +21,8 @@ from sqlalchemy.ext.asyncio import (
 )
 from sqlalchemy.pool import StaticPool
 
-from guidloc.common.database import Base
+from guidloc.common.database import Base, get_session
+from guidloc.main import app
 
 # Import all model modules so that metadata is fully populated before create_all.
 from guidloc.users import models as _users_models  # noqa: F401
@@ -28,11 +30,7 @@ from guidloc.users import models as _users_models  # noqa: F401
 
 @pytest_asyncio.fixture(scope="session")
 async def test_engine() -> AsyncIterator[AsyncEngine]:
-    """Create a single shared in-memory SQLite engine for the whole test session.
-
-    StaticPool keeps one connection alive so that the in-memory database
-    is shared across sessions within the same process.
-    """
+    """Single shared in-memory SQLite engine for the test session."""
     engine = create_async_engine(
         "sqlite+aiosqlite:///:memory:",
         connect_args={"check_same_thread": False},
@@ -46,6 +44,20 @@ async def test_engine() -> AsyncIterator[AsyncEngine]:
     await engine.dispose()
 
 
+@pytest_asyncio.fixture(autouse=True)
+async def _clean_database(test_engine: AsyncEngine) -> AsyncIterator[None]:
+    """Reset the schema before every test to ensure isolation.
+
+    Tests (and endpoints they exercise) commit data to the shared in-memory
+    database, so a simple session.rollback() is not enough. Dropping and
+    recreating all tables guarantees a clean state per test.
+    """
+    async with test_engine.begin() as conn:
+        await conn.run_sync(Base.metadata.drop_all)
+        await conn.run_sync(Base.metadata.create_all)
+    yield
+
+
 @pytest_asyncio.fixture
 async def db_session(test_engine: AsyncEngine) -> AsyncIterator[AsyncSession]:
     """Provide an AsyncSession that rolls back after each test."""
@@ -55,6 +67,24 @@ async def db_session(test_engine: AsyncEngine) -> AsyncIterator[AsyncSession]:
             yield session
         finally:
             await session.rollback()
+
+
+@pytest_asyncio.fixture
+async def client(test_engine: AsyncEngine) -> AsyncIterator[AsyncClient]:
+    """HTTP client wired to the FastAPI app with test DB session override."""
+    factory = async_sessionmaker(test_engine, expire_on_commit=False, autoflush=False)
+
+    async def override_get_session() -> AsyncIterator[AsyncSession]:
+        async with factory() as session:
+            yield session
+
+    app.dependency_overrides[get_session] = override_get_session
+    transport = ASGITransport(app=app)
+    try:
+        async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+            yield ac
+    finally:
+        app.dependency_overrides.clear()
 
 
 @pytest.fixture
