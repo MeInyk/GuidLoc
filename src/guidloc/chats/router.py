@@ -3,6 +3,8 @@
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from guidloc.agents.factory import get_llm_provider
+from guidloc.agents.runner import EmptyChatError, generate_assistant_reply
 from guidloc.auth.dependencies import get_current_user
 from guidloc.chats.models import Chat
 from guidloc.chats.schemas import (
@@ -140,3 +142,24 @@ async def get_messages(
 ):
     chat = await _get_owned_chat(chat_id, session, current_user)
     return await list_chat_messages(session, chat)
+
+
+@router.post(
+    "/{chat_id}/generate",
+    response_model=MessageRead,
+    status_code=status.HTTP_201_CREATED,
+    summary="Generate an assistant reply for the current chat history",
+)
+async def generate_reply(
+    chat_id: int,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    chat = await _get_owned_chat(chat_id, session, current_user)
+    try:
+        return await generate_assistant_reply(session, chat, current_user.id, get_llm_provider())
+    except EmptyChatError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Chat has no messages to reply to",
+        ) from exc

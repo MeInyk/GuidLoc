@@ -22,6 +22,11 @@ class Settings(BaseSettings):
     access_token_expire_minutes: int = 60 * 24  # 24 hours
     refresh_token_expire_days: int = 30
 
+    # LLM
+    llm_provider: str = "echo"  # echo | openai
+    openai_api_key: str | None = None
+    openai_model: str = "gpt-4o-mini"
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

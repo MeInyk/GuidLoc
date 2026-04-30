@@ -191,9 +191,7 @@ async def test_filter_by_single_category(client: AsyncClient, db_session: AsyncS
     assert names == ["Alpha Cafe", "Echo Cafe"]
 
 
-async def test_filter_by_multiple_categories(
-    client: AsyncClient, db_session: AsyncSession
-) -> None:
+async def test_filter_by_multiple_categories(client: AsyncClient, db_session: AsyncSession) -> None:
     await _populate(db_session)
 
     response = await client.get(
