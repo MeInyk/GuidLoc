@@ -14,6 +14,8 @@ class Settings(BaseSettings):
     app_port: int = 8000
     app_log_level: str = "INFO"
 
+    database_url: str = "sqlite+aiosqlite:///./guidloc.db"
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

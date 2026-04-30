@@ -13,4 +13,5 @@ def test_health_returns_ok() -> None:
     assert response.status_code == 200
     body = response.json()
     assert body["status"] == "ok"
-    assert "env" in body
+    assert body["env"] == "test"
+    assert body["database"] == "ok"
