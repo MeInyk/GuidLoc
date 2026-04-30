@@ -1,17 +1,60 @@
 """Database operations for locations."""
 
-from sqlalchemy import select
+from collections.abc import Sequence
+
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from guidloc.locations.models import Location
+from guidloc.locations.models import Location, LocationCategory, PriceLevel
 from guidloc.locations.schemas import LocationCreate
 
 
-async def list_active_locations(session: AsyncSession) -> list[Location]:
-    """Return all active locations ordered by name."""
-    result = await session.execute(
-        select(Location).where(Location.is_active.is_(True)).order_by(Location.name.asc())
-    )
+async def list_locations(
+    session: AsyncSession,
+    *,
+    categories: Sequence[LocationCategory] | None = None,
+    price_levels: Sequence[PriceLevel] | None = None,
+    tags: Sequence[str] | None = None,
+    query: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> list[Location]:
+    """List active locations with optional filters and pagination.
+
+    - categories: OR-match. A location matches if its category is in the set.
+    - price_levels: OR-match.
+    - tags: AND-match. A location must have ALL requested tags.
+    - query: case-insensitive substring match on name OR description.
+    """
+    stmt = select(Location).where(Location.is_active.is_(True))
+
+    if categories:
+        stmt = stmt.where(Location.category.in_(categories))
+
+    if price_levels:
+        stmt = stmt.where(Location.price_level.in_(price_levels))
+
+    if query:
+        like = f"%{query.strip().lower()}%"
+        stmt = stmt.where(
+            or_(
+                func.lower(Location.name).like(like),
+                func.lower(Location.description).like(like),
+            )
+        )
+
+    if tags:
+        # JSON portability: load rows and filter in Python. Locations is a
+        # small reference table, so this is acceptable for MVP.
+        stmt = stmt.order_by(Location.name.asc())
+        result = await session.execute(stmt)
+        rows = list(result.scalars().all())
+        required = set(tags)
+        rows = [loc for loc in rows if required.issubset(set(loc.tags or []))]
+        return rows[offset : offset + limit]
+
+    stmt = stmt.order_by(Location.name.asc()).limit(limit).offset(offset)
+    result = await session.execute(stmt)
     return list(result.scalars().all())
 
 
