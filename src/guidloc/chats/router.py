@@ -5,11 +5,19 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from guidloc.auth.dependencies import get_current_user
 from guidloc.chats.models import Chat
-from guidloc.chats.schemas import ChatCreate, ChatRead, ChatUpdate
+from guidloc.chats.schemas import (
+    ChatCreate,
+    ChatRead,
+    ChatUpdate,
+    MessageCreate,
+    MessageRead,
+)
 from guidloc.chats.service import (
     create_chat,
+    create_message,
     delete_chat,
     get_user_chat,
+    list_chat_messages,
     list_user_chats,
     update_chat,
 )
@@ -102,3 +110,33 @@ async def remove_chat(
     chat = await _get_owned_chat(chat_id, session, current_user)
     await delete_chat(session, chat)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post(
+    "/{chat_id}/messages",
+    response_model=MessageRead,
+    status_code=status.HTTP_201_CREATED,
+    summary="Add a message to a chat",
+)
+async def post_message(
+    chat_id: int,
+    payload: MessageCreate,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    chat = await _get_owned_chat(chat_id, session, current_user)
+    return await create_message(session, chat, payload)
+
+
+@router.get(
+    "/{chat_id}/messages",
+    response_model=list[MessageRead],
+    summary="List messages of a chat",
+)
+async def get_messages(
+    chat_id: int,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    chat = await _get_owned_chat(chat_id, session, current_user)
+    return await list_chat_messages(session, chat)
