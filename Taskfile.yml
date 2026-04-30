@@ -1,0 +1,23 @@
+version: "3"
+
+tasks:
+  dev:
+    desc: Run FastAPI dev server with auto-reload.
+    cmds:
+      - uv run uvicorn guidloc.main:app --reload --host 0.0.0.0 --port 8000
+
+  test:
+    desc: Run the test suite.
+    cmds:
+      - uv run pytest
+
+  lint:
+    desc: Run ruff linter.
+    cmds:
+      - uv run ruff check .
+
+  format:
+    desc: Format code and auto-fix lint issues.
+    cmds:
+      - uv run ruff format .
+      - uv run ruff check . --fix
