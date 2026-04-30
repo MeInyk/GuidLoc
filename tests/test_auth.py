@@ -28,6 +28,15 @@ async def _register(
     return response.json()
 
 
+async def _login(client: AsyncClient, email: str, password: str) -> dict:
+    response = await client.post(
+        "/auth/login",
+        json={"email": email, "password": password},
+    )
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
 async def test_register_creates_user_and_returns_public_fields(client: AsyncClient) -> None:
     body = await _register(client)
 
@@ -70,19 +79,15 @@ async def test_register_invalid_email_returns_422(client: AsyncClient) -> None:
     assert response.status_code == 422
 
 
-async def test_login_returns_access_token(client: AsyncClient) -> None:
+async def test_login_returns_token_pair(client: AsyncClient) -> None:
     await _register(client, email="bob@example.com", password="Sup3rSecret!")
 
-    response = await client.post(
-        "/auth/login",
-        json={"email": "bob@example.com", "password": "Sup3rSecret!"},
-    )
+    body = await _login(client, "bob@example.com", "Sup3rSecret!")
 
-    assert response.status_code == 200
-    body = response.json()
     assert body["token_type"] == "bearer"
-    assert body["access_token"]
-    assert isinstance(body["access_token"], str)
+    assert isinstance(body["access_token"], str) and body["access_token"]
+    assert isinstance(body["refresh_token"], str) and body["refresh_token"]
+    assert body["access_token"] != body["refresh_token"]
 
 
 async def test_login_wrong_password_returns_401(client: AsyncClient) -> None:
@@ -114,13 +119,12 @@ async def test_me_without_token_returns_401(client: AsyncClient) -> None:
 async def test_me_with_valid_token_returns_user(client: AsyncClient) -> None:
     user = await _register(client, email="dave@example.com", password="Sup3rSecret!")
 
-    login = await client.post(
-        "/auth/login",
-        json={"email": "dave@example.com", "password": "Sup3rSecret!"},
-    )
-    token = login.json()["access_token"]
+    tokens = await _login(client, "dave@example.com", "Sup3rSecret!")
 
-    response = await client.get("/auth/me", headers={"Authorization": f"Bearer {token}"})
+    response = await client.get(
+        "/auth/me",
+        headers={"Authorization": f"Bearer {tokens['access_token']}"},
+    )
 
     assert response.status_code == 200
     body = response.json()

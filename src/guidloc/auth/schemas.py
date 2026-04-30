@@ -10,8 +10,22 @@ class LoginRequest(BaseModel):
     password: str
 
 
+class RefreshRequest(BaseModel):
+    """Payload for refresh and logout endpoints."""
+
+    refresh_token: str
+
+
 class Token(BaseModel):
-    """JWT access token response."""
+    """Single access token response (kept for backward compatibility)."""
 
     access_token: str
+    token_type: str = "bearer"
+
+
+class TokenPair(BaseModel):
+    """Access + refresh token pair."""
+
+    access_token: str
+    refresh_token: str
     token_type: str = "bearer"

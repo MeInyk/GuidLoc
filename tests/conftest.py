@@ -21,6 +21,7 @@ from sqlalchemy.ext.asyncio import (
 )
 from sqlalchemy.pool import StaticPool
 
+from guidloc.auth import models as _refresh_token_models  # noqa: F401
 from guidloc.common.database import Base, get_session
 from guidloc.main import app
 
