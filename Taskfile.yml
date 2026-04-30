@@ -37,3 +37,8 @@ tasks:
     cmds:
       - rm -f guidloc.db
       - uv run alembic upgrade head
+  
+  seed:
+    desc: Populate the database with starter locations (idempotent).
+    cmds:
+      - uv run python -m scripts.seed_locations
