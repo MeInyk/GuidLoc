@@ -11,6 +11,10 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 from guidloc.common.config import get_settings
 from guidloc.common.database import Base
 
+# Import all model modules so that Base.metadata knows about every table
+# before autogenerate compares it with the database.
+from guidloc.users import models as _users_models  # noqa: F401
+
 # Alembic Config object provides access to alembic.ini values.
 config = context.config
 
