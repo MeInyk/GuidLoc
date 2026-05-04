@@ -1,10 +1,19 @@
 """HTTP routes for chats."""
 
+import json
+from collections.abc import AsyncIterator
+
 from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from guidloc.agents.base import StreamEvent
 from guidloc.agents.factory import get_llm_provider
-from guidloc.agents.runner import EmptyChatError, generate_assistant_reply, send_user_message
+from guidloc.agents.runner import (
+    EmptyChatError,
+    generate_assistant_reply,
+    stream_user_message,
+)
 from guidloc.auth.dependencies import get_current_user
 from guidloc.chats.models import Chat
 from guidloc.chats.schemas import (
@@ -14,7 +23,6 @@ from guidloc.chats.schemas import (
     MessageCreate,
     MessageRead,
     SendMessageRequest,
-    SendMessageResponse,
 )
 from guidloc.chats.service import (
     create_chat,
@@ -167,27 +175,37 @@ async def generate_reply(
         ) from exc
 
 
+async def _sse(events: AsyncIterator[StreamEvent]) -> AsyncIterator[bytes]:
+    async for ev in events:
+        payload = json.dumps(ev.data, ensure_ascii=False)
+        yield f"event: {ev.type}\ndata: {payload}\n\n".encode()
+
+
 @router.post(
     "/{chat_id}/send",
-    response_model=SendMessageResponse,
-    status_code=status.HTTP_201_CREATED,
-    summary="Send a user message and get an assistant reply in one call",
+    summary="Send a user message and stream the assistant reply via SSE",
+    responses={200: {"content": {"text/event-stream": {}}}},
 )
 async def send_message(
     chat_id: int,
     payload: SendMessageRequest,
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
-) -> SendMessageResponse:
+) -> StreamingResponse:
     chat = await _get_owned_chat(chat_id, session, current_user)
-    user_message, assistant_message = await send_user_message(
+    events = stream_user_message(
         session,
         chat,
         current_user.id,
         payload.content,
         get_llm_provider(),
     )
-    return SendMessageResponse(
-        user_message=MessageRead.model_validate(user_message),
-        assistant_message=MessageRead.model_validate(assistant_message),
+    return StreamingResponse(
+        _sse(events),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
     )

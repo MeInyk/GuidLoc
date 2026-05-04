@@ -10,6 +10,8 @@ flavours so we can give different agents different views of memory:
 Write tools are orchestrator-only.
 """
 
+import logging
+
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from agents import RunContextWrapper, function_tool
@@ -26,6 +28,10 @@ from guidloc.memory.schemas import (
     MemoryItemUpdate,
     UserProfileUpdate,
 )
+
+logger = logging.getLogger("guidloc.agents.tools")
+
+logger = logging.getLogger("guidloc.agents.tools")
 
 _SECTION_LABEL = {
     MemorySection.RULE: "RULES",
@@ -107,41 +113,54 @@ async def read_user_memory(
     ctx: RunContextWrapper[AgentContext],
     sections: list[str] | None = None,
 ) -> str:
-    """Read the user's memory. Orchestrator-only view that includes both
-    confirmed facts and unconfirmed assumptions.
+    """Read what we know about the current user.
 
-    How it works: returns the requested sections as plain text. Each item
-    is shown with its id and status so the orchestrator can decide whether
-    to confirm, supersede or archive it.
+    Returns memory items grouped by section, including their statuses
+    (possible / confirmed) and ids — so you can decide whether new info is
+    worth saving, or which existing item to update or forget.
 
-    When to use: before deciding whether to add, update or remove a memory
-    item that the current user message could affect.
+    Sections you can request:
+    - "rule"        — hard rules the user wants always followed.
+    - "preference"  — likes and dislikes.
+    - "user_info"   — facts about the user or people in their life.
+    - "note"        — plans, ideas, reminders.
+    - "profile"     — static profile fields (name, date of birth, phone,
+                    address).
+    Pass None or [] to get everything except profile.
 
-    When NOT to use: do not call before every reply. Only call when the
-    message looks like it carries a fact, preference, rule or note.
+    When to use:
+    - Before saving a new fact, to check whether something similar already
+    exists.
+    - Before recommending or answering, to personalise the reply.
 
-    Sections:
-        - profile: static personal data (preferred_name, date_of_birth,
-          phone, address_text). Returned only if explicitly requested.
-        - rules: things the user said to ALWAYS do.
-        - preferences: likes, dislikes, things to avoid.
-        - user_info: concrete facts (family, allergies, friends' names...).
-        - notes: short, often temporary reminders.
-
-    If `sections` is empty, all dynamic sections are returned (no profile).
-    """
+    Examples:
+    - User says "Я люблю чізкейк" -> read with sections=["preference"]
+    to see if "loves cheesecake" is already there.
+    - Planning a date suggestion -> read sections=["rule","preference",
+    "user_info"]."""
+    logger.info(
+        "tool=read_user_memory user_id=%s sections=%s",
+        ctx.context.user_id,
+        sections,
+    )
     parsed = _parse_sections(sections)
     # include_profile = parsed is not None and any(s.value == "profile" for s in [])  # placeholder
     # Profile is requested via the literal string "profile" outside enum.
     requested_profile = bool(sections) and any(s.lower() == "profile" for s in sections)
-    return await _load_memory(
-        ctx.context.session,
-        ctx.context.user_id,
-        parsed,
-        [MemoryItemStatus.POSSIBLE, MemoryItemStatus.CONFIRMED],
-        include_profile=requested_profile,
-        include_status=True,
+    async with ctx.context.db_lock:
+        result = await _load_memory(
+            ctx.context.session,
+            ctx.context.user_id,
+            parsed,
+            [MemoryItemStatus.POSSIBLE, MemoryItemStatus.CONFIRMED],
+            include_profile=requested_profile,
+            include_status=True,
+        )
+    logger.info(
+        "tool=read_user_memory result=ok bytes=%d",
+        len(result),
     )
+    return result
 
 
 @function_tool
@@ -149,32 +168,40 @@ async def read_confirmed_memory(
     ctx: RunContextWrapper[AgentContext],
     sections: list[str] | None = None,
 ) -> str:
-    """Read the confirmed parts of the user's memory for personalization.
+    """Read confirmed facts about the current user.
 
-    How it works: returns only memory the user explicitly confirmed or
-    stated. Statuses and ids are not exposed because this view is read-only
-    for the calling agent.
+    Returns only items with status "confirmed" (statuses are stripped from
+    the output). Use this when you want personalisation without the noise
+    of unverified guesses.
 
-    When to use: before recommending venues or building a plan, to honour
-    the user's known preferences, rules and relevant facts.
+    Sections work the same way as in read_user_memory; pass "profile" to
+    include static profile fields.
 
-    When NOT to use: do not call to look up identity-only data unless you
-    actually need it. Do not attempt to modify memory from this tool — it
-    is read-only.
-
-    Sections: same as `read_user_memory`. Pass "profile" explicitly to
-    receive static personal data.
-    """
+    When to use:
+    - Specialist agents that personalise recommendations but cannot edit
+    memory.
+    - Always read sections "rule" and "preference" before recommending."""
+    logger.info(
+        "tool=read_confirmed_memory user_id=%s sections=%s",
+        ctx.context.user_id,
+        sections,
+    )
     parsed = _parse_sections(sections)
     requested_profile = bool(sections) and any(s.lower() == "profile" for s in sections)
-    return await _load_memory(
-        ctx.context.session,
-        ctx.context.user_id,
-        parsed,
-        [MemoryItemStatus.CONFIRMED],
-        include_profile=requested_profile,
-        include_status=False,
+    async with ctx.context.db_lock:
+        result = await _load_memory(
+            ctx.context.session,
+            ctx.context.user_id,
+            parsed,
+            [MemoryItemStatus.CONFIRMED],
+            include_profile=requested_profile,
+            include_status=False,
+        )
+    logger.info(
+        "tool=read_confirmed_memory result=ok bytes=%d",
+        len(result),
     )
+    return result
 
 
 # --- WRITE TOOLS (orchestrator only) -------------------------------------
@@ -188,68 +215,94 @@ async def save_memory_item(
     status: str = "possible",
     item_id: int | None = None,
 ) -> str:
-    """Create or update a dynamic memory item.
+    """Create or update a dynamic memory item for the current user.
 
-    How it works: when `item_id` is omitted, a new item is created in the
-    given section. When `item_id` is provided, that item's value and/or
-    status are updated. The item must belong to the current user.
+    Args:
+        section: One of: "rule", "preference", "user_info", "note".
+            - "rule"        — only when the user uses absolute language
+                            ("завжди", "ніколи", "тільки") or explicitly
+                            asks to make it a rule.
+            - "preference"  — likes / dislikes.
+            - "user_info"   — facts about the user or people in their life.
+            - "note"        — plans, ideas, reminders.
+            Identity / contact fields go to update_user_profile, not here.
+        value: Short factual sentence in English or the user's language.
+        status: One of: "possible", "confirmed".
+            - "confirmed"   — clear statement, explicit ask to remember,
+                            or a previously "possible" fact the user
+                            repeated.
+            - "possible"    — soft signal worth verifying later.
+            NEVER pass "archived" — use forget_memory_item to remove.
+        item_id: Pass an existing id to update that item; omit to create.
 
-    When to use:
-        - The user said something worth remembering that is NOT already
-          stored. Save with status "possible" if it is a soft signal
-          ("I'd love some cake right now"), or "confirmed" if the user
-          stated it explicitly or asked you to remember it.
-        - You found an existing "possible" item and the user has now
-          repeated or confirmed it: update with status "confirmed".
-
-    When NOT to use:
-        - Do not duplicate an item that already says the same thing.
-        - Do not pass status "archived"; use the dedicated forget tool
-          when something is no longer true.
-
-    Allowed values:
-        section: rule | preference | user_info | note
-        status: possible | confirmed
+    Returns a short status string with the resulting item id.
 
     Examples:
-        - "Я люблю чізкейки" -> section=preference, value="loves cheesecakes",
-          status=possible.
-        - User repeats it later -> save_memory_item(item_id=<existing>,
-          status="confirmed").
-        - "Запам'ятай, що в мене прийом до лікаря в п'ятницю" ->
-          section=note, value="doctor appointment Friday", status=confirmed.
-    """
+    - "Я люблю чізкейк."   -> section="preference",
+                            value="loves cheesecake", status="confirmed".
+    - "Здається, мені там сподобалось." -> section="preference",
+                            value="possibly likes <place>",
+                            status="possible".
+    - Repeated later       -> save_memory_item(item_id=<existing>,
+                            status="confirmed")."""
+    logger.info(
+        "tool=save_memory_item user_id=%s section=%s status=%s item_id=%s value=%r",
+        ctx.context.user_id,
+        section,
+        status,
+        item_id,
+        value,
+    )
     try:
         section_enum = MemorySection(section.lower())
     except ValueError:
-        return f"Unknown section: {section}."
+        allowed = ", ".join(s.value for s in MemorySection)
+        msg = f"Unknown section '{section}'. Allowed: {allowed}."
+        logger.warning("tool=save_memory_item result=error %s", msg)
+        return msg
     try:
         status_enum = MemoryItemStatus(status.lower())
     except ValueError:
-        return f"Unknown status: {status}."
+        allowed = ", ".join(s.value for s in MemoryItemStatus if s.value != "archived")
+        msg = f"Unknown status '{status}'. Allowed: {allowed}."
+        logger.warning("tool=save_memory_item result=error %s", msg)
+        return msg
     if status_enum is MemoryItemStatus.ARCHIVED:
-        return "Cannot set status to archived. Use the forget tool instead."
+        msg = "Cannot set status to archived. Use the forget tool instead."
+        logger.warning("tool=save_memory_item result=error %s", msg)
+        return msg
 
     session = ctx.context.session
     user_id = ctx.context.user_id
 
-    if item_id is not None:
-        item = await service.get_item(session, user_id, item_id)
-        if item is None:
-            return f"Item {item_id} not found."
-        item = await service.update_item(
-            session,
-            item,
-            MemoryItemUpdate(value=value, status=status_enum),
-        )
-        return f"Updated item id={item.id} section={item.section.value} status={item.status.value}."
+    async with ctx.context.db_lock:
+        if item_id is not None:
+            item = await service.get_item(session, user_id, item_id)
+            if item is None:
+                msg = f"Item {item_id} not found."
+                logger.warning("tool=save_memory_item result=error %s", msg)
+                return msg
+            item = await service.update_item(
+                session,
+                item,
+                MemoryItemUpdate(value=value, status=status_enum),
+            )
+            result = (
+                f"Updated item id={item.id} "
+                f"section={item.section.value} "
+                f"status={item.status.value}."
+            )
+            logger.info("tool=save_memory_item result=ok %s", result)
+            return result
 
-    item = await service.create_item(
-        session,
-        user_id,
-        MemoryItemCreate(section=section_enum, value=value, status=status_enum),
-    )
-    return f"Created item id={item.id} section={item.section.value} status={item.status.value}."
+        item = await service.create_item(
+            session,
+            user_id,
+            MemoryItemCreate(section=section_enum, value=value, status=status_enum),
+        )
+    result = f"Created item id={item.id} section={item.section.value} status={item.status.value}."
+    logger.info("tool=save_memory_item result=ok %s", result)
+    return result
 
 
 @function_tool
@@ -257,26 +310,31 @@ async def forget_memory_item(
     ctx: RunContextWrapper[AgentContext],
     item_id: int,
 ) -> str:
-    """Mark a memory item as no longer valid.
+    """Archive a memory item that is no longer true.
 
-    How it works: the item is moved to the archived status. It will not be
-    returned by either read tool again, but it is kept in the database for
-    later analysis. There is no real delete from agents.
+    The item is moved to status "archived" and stops appearing in reads.
+    Nothing is hard-deleted.
 
     When to use:
-        - The user explicitly said something is no longer true
-          ("я більше не люблю рибу", "забудь про прийом у лікаря").
-        - A new fact directly contradicts an existing one and you have
-          just saved the new one.
-
-    When NOT to use: do not archive items just because they are old.
-    Notes and rules expire only when the user implies they should.
-    """
-    item = await service.get_item(ctx.context.session, ctx.context.user_id, item_id)
-    if item is None:
-        return f"Item {item_id} not found."
-    await service.archive_item(ctx.context.session, item)
-    return f"Archived item id={item.id}."
+    - The user said something is no longer true ("я більше не люблю рибу",
+    "забудь про прийом у лікаря").
+    - You are about to save a new fact that directly contradicts an
+    existing one — archive the old, save the new."""
+    logger.info(
+        "tool=forget_memory_item user_id=%s item_id=%s",
+        ctx.context.user_id,
+        item_id,
+    )
+    async with ctx.context.db_lock:
+        item = await service.get_item(ctx.context.session, ctx.context.user_id, item_id)
+        if item is None:
+            msg = f"Item {item_id} not found."
+            logger.warning("tool=forget_memory_item result=error %s", msg)
+            return msg
+        await service.archive_item(ctx.context.session, item)
+    result = f"Archived item id={item.id}."
+    logger.info("tool=forget_memory_item result=ok %s", result)
+    return result
 
 
 @function_tool
@@ -287,26 +345,33 @@ async def update_user_profile(
     phone: str | None = None,
     address_text: str | None = None,
 ) -> str:
-    """Update one or more static profile fields.
+    """Update static profile fields of the current user.
 
-    How it works: only fields you pass are updated; the rest are kept.
-    Profile fields have no statuses — set them only when the user states
-    them clearly or asks you to remember them.
+    Only the fields you pass are changed. Profile fields have no statuses —
+    set them only when the user states them clearly or asks you to remember
+    them.
 
-    When to use:
-        - "Звати мене Олег" -> preferred_name="Олег".
-        - "Мій телефон ..." -> phone="...".
-        - "Я живу на ..." (only if the user explicitly asked to remember).
+    Fields:
+    - preferred_name — how to address the user.
+    - date_of_birth  — ISO YYYY-MM-DD.
+    - phone          — string as the user provided.
+    - address_text   — only if the user explicitly authorised storing it.
 
-    When NOT to use:
-        - Do not guess profile fields from indirect signals; use the
-          memory items with status "possible" instead.
-        - Do not store address unless the user clearly authorised it.
-
-    Format:
-        date_of_birth: ISO date string YYYY-MM-DD.
-    """
+    Examples:
+    - "Звати мене Олег."             -> preferred_name="Олег".
+    - "Мій телефон +380 …"           -> phone="+380 …".
+    - "Народився 12.07.1990."        -> date_of_birth="1990-07-12"."""
     from datetime import date as _date
+
+    logger.info(
+        "tool=update_user_profile user_id=%s preferred_name=%r date_of_birth=%r "
+        "phone=%r address_text=%r",
+        ctx.context.user_id,
+        preferred_name,
+        date_of_birth,
+        phone,
+        address_text,
+    )
 
     payload_kwargs: dict = {}
     if preferred_name is not None:
@@ -315,18 +380,25 @@ async def update_user_profile(
         try:
             payload_kwargs["date_of_birth"] = _date.fromisoformat(date_of_birth)
         except ValueError:
-            return "date_of_birth must be in YYYY-MM-DD format."
+            msg = "date_of_birth must be in YYYY-MM-DD format."
+            logger.warning("tool=update_user_profile result=error %s", msg)
+            return msg
     if phone is not None:
         payload_kwargs["phone"] = phone
     if address_text is not None:
         payload_kwargs["address_text"] = address_text
 
     if not payload_kwargs:
-        return "No profile fields provided."
+        msg = "No profile fields provided."
+        logger.warning("tool=update_user_profile result=error %s", msg)
+        return msg
 
-    profile = await service.update_profile(
-        ctx.context.session,
-        ctx.context.user_id,
-        UserProfileUpdate(**payload_kwargs),
-    )
-    return f"Profile updated for user_id={profile.user_id}."
+    async with ctx.context.db_lock:
+        profile = await service.update_profile(
+            ctx.context.session,
+            ctx.context.user_id,
+            UserProfileUpdate(**payload_kwargs),
+        )
+    result = f"Profile updated for user_id={profile.user_id}."
+    logger.info("tool=update_user_profile result=ok %s", result)
+    return result

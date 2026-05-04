@@ -1,5 +1,7 @@
 """Function tools exposed to OpenAI Agents."""
 
+import logging
+
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from agents import RunContextWrapper, function_tool
@@ -9,6 +11,8 @@ from guidloc.locations.service import list_locations
 
 _MAX_RESULTS = 20
 _DEFAULT_RESULTS = 5
+
+logger = logging.getLogger("guidloc.agents.tools")
 
 
 async def search_locations_impl(
@@ -60,20 +64,44 @@ async def search_locations(
     tag: str | None = None,
     limit: int = _DEFAULT_RESULTS,
 ) -> str:
-    """Search the GuidLoc location database for places in Chernivtsi.
+    """Search OUR Chernivtsi database for places.
 
-    Args:
-        query: Free-text substring to match in the place name or description.
-        category: One of: cafe, restaurant, bar, park, museum, gallery,
-            attraction, shop, hotel, entertainment, other.
-        tag: A single tag the place must have (e.g. 'wifi', 'walk',
-            'date-night', 'family-friendly', 'quiet').
-        limit: Maximum number of places to return (1..20).
-    """
-    return await search_locations_impl(
-        ctx.context.session,
-        query=query,
-        category=category,
-        tag=tag,
-        limit=limit,
+    Filters:
+        query    — free-text snippet matched against name and description.
+        category — one of: cafe, restaurant, bar, park, museum, gallery,
+                attraction, shop, hotel, entertainment, other.
+        tag      — a single tag the place must have (e.g. "wifi", "walk",
+                "date-night", "family-friendly", "quiet").
+        limit    — 1..20.
+
+    Returns a short bulleted list of matching places (name, address, tags).
+
+    When to use:
+    - ALWAYS first, before suggesting any venue.
+    - If the first call is empty, broaden it (drop a tag, widen category,
+    simplify query) before falling back to web_search.
+
+    Examples:
+    - "Quiet cafe with wifi" -> category="cafe", tag="wifi", query="quiet".
+    - "Cheesecake nearby"    -> category="cafe", query="cheesecake"."""
+    logger.info(
+        "tool=search_locations user_id=%s query=%r category=%s tag=%s limit=%s",
+        ctx.context.user_id,
+        query,
+        category,
+        tag,
+        limit,
     )
+    async with ctx.context.db_lock:
+        result = await search_locations_impl(
+            ctx.context.session,
+            query=query,
+            category=category,
+            tag=tag,
+            limit=limit,
+        )
+    logger.info(
+        "tool=search_locations result=ok lines=%d",
+        result.count("\n") + 1 if result else 0,
+    )
+    return result

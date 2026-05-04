@@ -15,6 +15,7 @@ class Settings(BaseSettings):
     app_log_level: str = "INFO"
 
     database_url: str = "sqlite+aiosqlite:///./guidloc.db"
+    db_echo: bool = False
 
     # Auth / JWT
     jwt_secret: str = "change-me-in-production"
@@ -25,7 +26,8 @@ class Settings(BaseSettings):
     # LLM
     llm_provider: str = "echo"  # echo | openai
     openai_api_key: str | None = None
-    openai_model: str = "gpt-4o-mini"
+    openai_model: str = "gpt-5-mini"
+    agent_max_turns: int = 40
 
     model_config = SettingsConfigDict(
         env_file=".env",
