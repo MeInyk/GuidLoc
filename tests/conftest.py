@@ -7,6 +7,9 @@ import os
 os.environ["DATABASE_URL"] = "sqlite+aiosqlite:///:memory:"
 os.environ["APP_ENV"] = "test"
 os.environ["APP_DEBUG"] = "false"
+# Force the deterministic echo LLM provider for tests, regardless of .env.
+os.environ["LLM_PROVIDER"] = "echo"
+os.environ.pop("OPENAI_API_KEY", None)
 
 from collections.abc import AsyncIterator
 
@@ -26,6 +29,7 @@ from guidloc.chats import models as _chats_models  # noqa: F401
 from guidloc.common.database import Base, get_session
 from guidloc.locations import models as _locations_models  # noqa: F401
 from guidloc.main import app
+from guidloc.memory import models as _memory_models  # noqa: F401
 
 # Import all model modules so that metadata is fully populated before create_all.
 from guidloc.users import models as _users_models  # noqa: F401

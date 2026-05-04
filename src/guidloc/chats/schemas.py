@@ -49,3 +49,16 @@ class MessageRead(BaseModel):
     role: MessageRole
     content: str
     created_at: datetime
+
+
+class SendMessageRequest(BaseModel):
+    """Payload for sending a user message and getting an assistant reply in one call."""
+
+    content: str = Field(min_length=1, max_length=20_000)
+
+
+class SendMessageResponse(BaseModel):
+    """Result of /chats/{id}/send: the persisted user message and assistant reply."""
+
+    user_message: MessageRead
+    assistant_message: MessageRead

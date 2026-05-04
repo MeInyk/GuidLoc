@@ -13,6 +13,7 @@ from guidloc.chats import models as _chats_models  # noqa: F401
 from guidloc.common.config import get_settings
 from guidloc.common.database import Base
 from guidloc.locations import models as _locations_models  # noqa: F401
+from guidloc.memory import models as _memory_models  # noqa: F401
 
 # Import all model modules so that Base.metadata knows about every table
 # before autogenerate compares it with the database.

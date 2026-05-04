@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from guidloc.agents.factory import get_llm_provider
-from guidloc.agents.runner import EmptyChatError, generate_assistant_reply
+from guidloc.agents.runner import EmptyChatError, generate_assistant_reply, send_user_message
 from guidloc.auth.dependencies import get_current_user
 from guidloc.chats.models import Chat
 from guidloc.chats.schemas import (
@@ -13,6 +13,8 @@ from guidloc.chats.schemas import (
     ChatUpdate,
     MessageCreate,
     MessageRead,
+    SendMessageRequest,
+    SendMessageResponse,
 )
 from guidloc.chats.service import (
     create_chat,
@@ -163,3 +165,29 @@ async def generate_reply(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Chat has no messages to reply to",
         ) from exc
+
+
+@router.post(
+    "/{chat_id}/send",
+    response_model=SendMessageResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Send a user message and get an assistant reply in one call",
+)
+async def send_message(
+    chat_id: int,
+    payload: SendMessageRequest,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> SendMessageResponse:
+    chat = await _get_owned_chat(chat_id, session, current_user)
+    user_message, assistant_message = await send_user_message(
+        session,
+        chat,
+        current_user.id,
+        payload.content,
+        get_llm_provider(),
+    )
+    return SendMessageResponse(
+        user_message=MessageRead.model_validate(user_message),
+        assistant_message=MessageRead.model_validate(assistant_message),
+    )

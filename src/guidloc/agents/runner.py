@@ -12,6 +12,26 @@ class EmptyChatError(Exception):
     """Raised when an assistant reply is requested but the chat has no messages."""
 
 
+async def send_user_message(
+    session: AsyncSession,
+    chat: Chat,
+    user_id: int,
+    content: str,
+    llm: LLMProvider,
+) -> tuple[Message, Message]:
+    """Persist a user message, generate and persist the assistant reply.
+
+    Returns a tuple of (user_message, assistant_message).
+    """
+    user_message = await create_message(
+        session,
+        chat,
+        MessageCreate(role=MessageRole.USER, content=content),
+    )
+    assistant_message = await generate_assistant_reply(session, chat, user_id, llm)
+    return user_message, assistant_message
+
+
 async def generate_assistant_reply(
     session: AsyncSession,
     chat: Chat,

@@ -12,6 +12,7 @@ from guidloc.common.config import Settings, get_settings
 from guidloc.common.database import get_session
 from guidloc.common.logging import setup_logging
 from guidloc.locations.router import router as locations_router
+from guidloc.memory.router import router as memory_router
 from guidloc.users.router import router as users_router
 
 logger = logging.getLogger(__name__)
@@ -44,6 +45,7 @@ def create_app() -> FastAPI:
     app.include_router(users_router)
     app.include_router(chats_router)
     app.include_router(locations_router)
+    app.include_router(memory_router)
     logger.info("Application initialized (env=%s)", settings.app_env)
     return app
 

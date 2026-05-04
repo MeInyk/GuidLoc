@@ -1,35 +1,75 @@
-"""OpenAI Agents SDK provider with one places specialist and one tool."""
+"""OpenAI Agents SDK provider with an orchestrator and a places specialist."""
 
 from agents import Agent, Runner, set_default_openai_key
 from guidloc.agents.base import AgentContext, ChatTurn, LLMProvider
+from guidloc.agents.common_tools import get_current_datetime
+from guidloc.agents.memory_tools import (
+    forget_memory_item,
+    read_confirmed_memory,
+    read_user_memory,
+    save_memory_item,
+    update_user_profile,
+)
 from guidloc.agents.tools import search_locations
 from guidloc.chats.models import MessageRole
 from guidloc.common.config import get_settings
 
 ORCHESTRATOR_INSTRUCTIONS = """\
-You are GuidLoc, a friendly assistant who helps visitors and locals discover \
-Chernivtsi, Ukraine. You can answer general questions about the city: history, \
-neighborhoods, getting around, etiquette, weather context.
+You are GuidLoc, a friendly assistant who helps people discover Chernivtsi, Ukraine.
 
-When the user asks for concrete recommendations — places to eat, drink, walk, \
-visit, shop, or any specific venue — hand off to PlacesAgent. Do not invent \
-venues yourself.
+You are the entry point for every user message. On every turn:
 
-Always reply in the same language the user wrote in. Keep replies concise, \
+1. Decide whether the message contains anything worth remembering: a rule
+   the user wants the assistant to always follow, a preference (likes,
+   dislikes, things to avoid), a concrete fact about the user or close
+   people, or a note the user asked to keep. If not, skip to step 4.
+
+2. If yes, call read_user_memory for the sections that may be related
+   ("profile" only when identity/contact data is involved). Compare with
+   what is already stored:
+     - already stored as confirmed and matches -> do nothing.
+     - already stored as possible and the user repeats or confirms it ->
+       save_memory_item with item_id=<existing> and status="confirmed".
+     - new soft signal not yet stored -> save_memory_item with status
+       "possible".
+     - the user explicitly asked you to remember it, or stated it clearly
+       -> save_memory_item with status "confirmed".
+     - the new fact directly contradicts an existing item ->
+       forget_memory_item on the old one, then save_memory_item for the
+       new one.
+   For static identity fields (preferred_name, date_of_birth, phone,
+   address_text) use update_user_profile, never memory items. Do not set
+   address from indirect signals.
+
+3. Never set status "archived" yourself. Use forget_memory_item; the
+   backend will archive.
+
+4. Decide where to handle the request:
+     - If the user asks for concrete venues to visit, eat, walk, shop or
+       any place in Chernivtsi -> hand off to PlacesAgent. Do not invent
+       venues yourself.
+     - Otherwise answer directly: small talk, capabilities, time, simple
+       facts about the city.
+
+Always reply in the same language the user wrote in. Keep replies concise,
 warm and practical.
 """
 
 PLACES_INSTRUCTIONS = """\
 You are a Chernivtsi places expert.
 
-Always call the search_locations tool before suggesting venues — never invent \
-places that are not returned by the tool. Refine your tool call (category, tag, \
-query) to match the user's intent. If the first call returns nothing, try a \
-broader search.
+Before recommending, call read_confirmed_memory for the sections that
+matter (usually "preferences" and "user_info") so suggestions respect the
+user's known likes, dislikes and constraints. You cannot edit memory.
 
-When suggesting, mention each place's name, a short reason why it fits the \
-request, and the address. Suggest 2-4 options unless the user asked for more. \
-Reply in the same language the user wrote in.
+Always call search_locations before suggesting venues — never invent
+places that are not returned by the tool. Refine your tool call (category,
+tag, query) to match the user's intent. If the first call returns nothing,
+broaden the search.
+
+When suggesting, mention each place's name, a short reason why it fits
+the request, and the address. Suggest 2-4 options unless the user asked
+for more. Reply in the same language the user wrote in.
 """
 
 
@@ -37,18 +77,22 @@ def _build_places_agent(model: str) -> Agent[AgentContext]:
     return Agent[AgentContext](
         name="PlacesAgent",
         instructions=PLACES_INSTRUCTIONS,
-        tools=[search_locations],
+        tools=[search_locations, read_confirmed_memory, get_current_datetime],
         model=model,
     )
 
 
-def _build_orchestrator_agent(
-    model: str,
-    places: Agent[AgentContext],
-) -> Agent[AgentContext]:
+def _build_orchestrator_agent(model: str, places: Agent[AgentContext]) -> Agent[AgentContext]:
     return Agent[AgentContext](
         name="Orchestrator",
         instructions=ORCHESTRATOR_INSTRUCTIONS,
+        tools=[
+            read_user_memory,
+            save_memory_item,
+            forget_memory_item,
+            update_user_profile,
+            get_current_datetime,
+        ],
         handoffs=[places],
         model=model,
     )
@@ -71,8 +115,6 @@ class OpenAIAgentsProvider:
         messages: list[ChatTurn],
         context: AgentContext,
     ) -> str:
-        # Pass full conversation as the input. Drop system messages (we don't
-        # currently store them, and instructions live on the Agent).
         sdk_input = [
             {"role": m.role.value, "content": m.content}
             for m in messages
@@ -82,5 +124,4 @@ class OpenAIAgentsProvider:
         return str(result.final_output)
 
 
-# Type-check that the class satisfies the protocol.
 _: LLMProvider = OpenAIAgentsProvider.__new__(OpenAIAgentsProvider)
