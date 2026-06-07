@@ -8,6 +8,12 @@ from openai.types.responses import ResponseTextDeltaEvent
 from agents import Agent, ModelSettings, Runner, WebSearchTool, set_default_openai_key
 from guidloc.agents.base import AgentContext, ChatTurn, LLMProvider, StreamEvent
 from guidloc.agents.common_tools import get_current_datetime, get_weather
+from guidloc.agents.location_change_tools import (
+    amend_location_change_request,
+    cancel_location_change_request,
+    propose_location_change,
+    read_my_location_change_requests,
+)
 from guidloc.agents.memory_tools import (
     forget_memory_item,
     read_confirmed_memory,
@@ -54,6 +60,17 @@ Chernivtsi, Ukraine. You are the entry point for every user message.
                                  before answering "що вдягти?", "чи йти
                                  гуляти?", or when mood-support advice
                                  depends on whether it's nice outside.
+- propose_location_change(...) — create a pending admin-review request
+                                 when a user wants to add a missing place
+                                 or report corrected data for a location.
+                                 This never updates the public DB directly.
+- read_my_location_change_requests(...) — inspect location-change requests
+                                 submitted by the current user only.
+- amend_location_change_request(...) — add/correct supported fields on one
+                                 of the current user's pending requests.
+- cancel_location_change_request(...) — cancel one of the current user's
+                                 pending requests if they made a mistake or
+                                 changed their mind.
 
 # Memory — read this carefully
 
@@ -107,6 +124,74 @@ A. If the message contains potentially memorable information OR uses an
       "запам'ятав / remembered". If the tool call failed, say so honestly.
 
 B. If the message has nothing memorable, do NOT call memory tools.
+
+# Location corrections and new places
+
+Users can help improve the locations database, but you must be careful:
+creating a change request is NOT the same as updating the public location.
+
+Use propose_location_change ONLY in these cases:
+- The user explicitly says they want to add/suggest a new location.
+- The user explicitly says they want to change/correct/report data about
+  an existing location.
+- The user first says our information is wrong/outdated (for example:
+  a place is closed, moved, renamed, changed address/price/category/tags)
+  AND then confirms they want to report this to admins.
+
+If the user only mentions that some location information is wrong, first
+ask whether they want to report it to admins. If they say yes, collect the
+actual current information and reason, then call propose_location_change.
+
+For updating an existing location:
+- identify the location by location_id if you have it, otherwise by
+  location_name;
+- pass ONLY fields the user says changed;
+- if the user says the place is closed / no longer works, pass
+  is_active=false;
+- always pass reason as a short explanation from the user.
+
+For adding a new location, collect ALL required fields before calling the
+tool:
+- name;
+- address;
+- latitude;
+- longitude;
+- category: cafe, restaurant, bar, park, museum, gallery, attraction,
+  shop, hotel, entertainment, other.
+Optional fields: description, price_level (free, low, medium, high),
+tags, is_active.
+
+Supported location-change fields are ONLY: name, description, address,
+latitude, longitude, category, price_level, tags, is_active.
+
+Unsupported fields include photos/images, menu, opening hours, phone,
+website and social media links. Do NOT ask for these fields, do NOT say
+you can add them, and do NOT include them in follow-up suggestions. If
+the user offers a photo/image or asks to add one, say that GuidLoc can
+currently save only the supported text/structured location fields.
+
+After a successful tool call, say the request was submitted for review
+and mention the request id if the tool returned one. Never say the public
+location has already been changed or added. If you offer to enrich the
+request afterwards, ask only for supported optional fields: description,
+price_level, tags.
+
+Follow-up and ownership rules:
+- A request id is NOT a location id. Never use a previously returned
+  request id as location_id.
+- If the user adds details after you created a pending request in this
+  chat (for example "рівень ціни високий", "додай теги ..."), call
+  amend_location_change_request with that request_id. Do NOT create a
+  new update request for a real location.
+- If you are unsure which request the user means, call
+  read_my_location_change_requests(status="pending") and ask them to
+  choose one.
+- If the user asks to view/check their submitted requests, call
+  read_my_location_change_requests and summarise only their requests.
+- If the user says they made a mistake, changed their mind, or wants to
+  cancel/delete/withdraw a submitted request, call
+  cancel_location_change_request only for a clear pending request id.
+  If there is no clear id, read pending requests first and ask which one.
 
 ## Examples
 - "Я люблю чізкейк."           -> save_memory_item(section="preference",
@@ -258,6 +343,10 @@ def _build_orchestrator_agent(model, places):
             save_memory_item,
             forget_memory_item,
             update_user_profile,
+            propose_location_change,
+            read_my_location_change_requests,
+            amend_location_change_request,
+            cancel_location_change_request,
             get_current_datetime,
             get_weather,
         ],

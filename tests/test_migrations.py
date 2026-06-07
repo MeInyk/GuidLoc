@@ -57,5 +57,26 @@ def test_alembic_upgrade_head_creates_users_table() -> None:
                 "created_at",
                 "updated_at",
             }.issubset(columns)
+
+            assert "location_change_requests" in tables
+            change_request_columns = {
+                c["name"] for c in inspector.get_columns("location_change_requests")
+            }
+            assert {
+                "id",
+                "created_by_user_id",
+                "location_id",
+                "change_type",
+                "status",
+                "reason",
+                "proposed_changes",
+                "original_snapshot",
+                "original_location_updated_at",
+                "merged_location_id",
+                "merged_by_user_id",
+                "merged_at",
+                "created_at",
+                "updated_at",
+            }.issubset(change_request_columns)
         finally:
             engine.dispose()
